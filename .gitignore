@@ -1,0 +1,9 @@
+# Reports produced by the scanner (regenerated every run)
+quality-reports/
+
+# If this scanner is fetched into a project by CI
+.quality-gate-tool/
+
+# Python
+__pycache__/
+*.pyc

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Thin wrapper so you can type `./quality` instead of `python3 scan.py`.
+# Passes every argument straight through. Read-only — see scan.py.
+set -euo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PY="python3"; command -v python3 >/dev/null 2>&1 || PY="python"
+exec "$PY" "$DIR/scan.py" "$@"

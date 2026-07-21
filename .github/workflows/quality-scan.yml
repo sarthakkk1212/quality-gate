@@ -1,0 +1,51 @@
+# Copy this file into a target project at .github/workflows/quality-scan.yml
+# It runs the Quality Gate as a NON-BLOCKING, read-only check on pull requests
+# and uploads the report as an artifact. It never fails the build and never
+# changes code. Flip `continue-on-error` to false only once your team wants it
+# to gate merges.
+name: Quality Gate (scan)
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0            # needed so the scanner can diff against the base
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Optional: install the deterministic tools you want CI to run. The scanner
+      # skips any tool that isn't present, so install only what this repo uses.
+      # - name: Install scanners
+      #   run: pip install ruff mypy bandit pip-audit
+
+      - name: Fetch Quality Gate scanner
+        run: git clone --depth 1 https://github.com/MarketInk/quality-gate .quality-gate-tool
+
+      - name: Run Quality Gate (read-only, non-blocking)
+        continue-on-error: true
+        run: >
+          python .quality-gate-tool/scan.py
+          --path .
+          --base "origin/${{ github.base_ref }}"
+          --no-ai
+          --out quality-reports
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-report
+          path: quality-reports/
