@@ -32,7 +32,7 @@ jobs:
       #   run: pip install ruff mypy bandit pip-audit
 
       - name: Fetch Quality Gate scanner
-        run: git clone --depth 1 https://github.com/MarketInk/quality-gate .quality-gate-tool
+        run: git clone --depth 1 https://github.com/sarthakkk1212/quality-gate.git .quality-gate-tool
 
       - name: Run Quality Gate (read-only, non-blocking)
         continue-on-error: true
