@@ -122,7 +122,7 @@ Every flag, in plain English, with when to use it.
 | `--staged` | Scan only `git add`-ed changes + AI review of staged diff | Inside a pre-commit hook |
 | `--base REF` | Diff against a specific ref (tag/branch/commit) | Review "everything since last release": `--base v1.4.0` |
 | `--no-ai` | Skip the Claude review (faster, offline, CI-friendly) | CI, or when you just want the linters |
-| `--ai-full` | Run **all 5** AI reviewers (review + security + architecture + performance + business-logic) | Deep review before a big merge |
+| `--ai-full` | Run **all 6** AI reviewers (review + security + architecture + performance + business-logic + supabase) | Deep review before a big merge |
 | `--no-report` | Print to console only; write nothing anywhere | Truly zero-touch spot check |
 | `--out DIR` | Where to write the report | Pin reports to a fixed folder |
 | `--strict` | **Exit code 1** if there are findings | CI gating / git hooks that should block |
@@ -143,7 +143,7 @@ qg
 # 2. Quick, no AI — just the linters/type/security checks on your changes
 qg --no-ai
 
-# 3. Deep review before opening an important PR (all 5 AI reviewers)
+# 3. Deep review before opening an important PR (all 6 AI reviewers)
 qg --ai-full
 
 # 4. One-time audit of an existing/legacy repo (whole project, no AI noise)
@@ -201,7 +201,7 @@ file entirely and safe defaults still apply.
   (`origin/main` → `main` → …). Set it if your default branch is unusual.
 - `disabled_checks` — check ids you never want to run. Valid ids:
   `ruff`, `ruff-format`, `mypy`, `bandit`, `pip-audit`, `eslint`, `prettier`,
-  `tsc`, `npm-audit`, `gitleaks`.
+  `tsc`, `npm-audit`, `gitleaks`, `supabase`.
   Example — silence npm audit and secrets: `["npm-audit", "gitleaks"]`.
 
 ---

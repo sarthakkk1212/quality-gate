@@ -231,10 +231,13 @@ your PATH. Without it, everything still works — the AI section just says "skip
 | Security (code) | `bandit` | ✅ | — |
 | Dependencies (CVEs) | `pip-audit` / `npm audit` | ✅ | ✅ |
 | Secrets | `gitleaks` | ✅ | ✅ |
+| Supabase (RLS/keys/grants) | *built-in* (no tool needed) | ✅ | ✅ |
 | AI review of diff | `claude` | ✅ | ✅ |
 
 React/Next are just JS/TS to the scanner — ESLint + Prettier + TypeScript cover
-them. See [§9](#9-configuring-it-per-project-ts--js--python--react--next) for
+them. The **Supabase** check is built into `scan.py` (pure Python, no install),
+auto-skips on non-Supabase projects, and statically flags the concrete anti-patterns
+a live-DB audit would catch — see [§9.4](#94-supabase-projects). See [§9](#9-configuring-it-per-project-ts--js--python--react--next) for
 stack-specific tips.
 
 ---
@@ -268,7 +271,7 @@ python scan.py --path E:\path\to\my-project
 ```powershell
 qg                       # DAILY DRIVER: scan my changed files + AI review of the diff
 qg --no-ai               # faster: just linters/types/security on my changes (no AI, offline)
-qg --ai-full             # DEEP review before an important PR (all 5 AI reviewers)
+qg --ai-full             # DEEP review before an important PR (all 6 AI reviewers)
 qg --staged              # only what I've `git add`-ed (perfect for a pre-commit hook)
 qg --base v1.4.0         # everything since a release tag/branch/commit
 qg --path ..\repo --all --no-ai    # one-time full audit of another repo
@@ -286,7 +289,7 @@ qg --strict              # exit code 1 if there are findings (for hooks/CI gatin
 | `--staged` | Scan only `git add`-ed changes | Inside a pre-commit hook |
 | `--base REF` | Diff against a specific tag/branch/commit | "Everything since last release" |
 | `--no-ai` | Skip the Claude review | CI, offline, or "just the linters" |
-| `--ai-full` | Run all 5 AI reviewers (review + security + architecture + performance + business-logic) | Deep review before a big merge |
+| `--ai-full` | Run all 6 AI reviewers (review + security + architecture + performance + business-logic + supabase) | Deep review before a big merge |
 | `--no-report` | Console only; write nothing | Truly zero-touch spot check |
 | `--out DIR` | Where to write the report | Pin reports to a fixed folder |
 | `--strict` | **Exit 1** if there are findings | CI gating / blocking git hooks |
@@ -374,7 +377,7 @@ Lives next to `scan.py`. Delete it and safe defaults still apply.
   `"origin/develop"`).
 - **`disabled_checks`** — check ids you never want to run. Valid ids:
   `ruff`, `ruff-format`, `mypy`, `bandit`, `pip-audit`, `eslint`, `prettier`,
-  `tsc`, `npm-audit`, `gitleaks`.
+  `tsc`, `npm-audit`, `gitleaks`, `supabase`.
   Example — silence npm audit and secrets: `["npm-audit", "gitleaks"]`.
 
 ### 9.2 Give Claude your project's rules — `CLAUDE.md`
@@ -430,6 +433,43 @@ The more concrete the rules, the more objective and useful the AI review.
 > normally would; the gate is just the thing that runs them consistently and adds
 > the AI layer.
 
+### 9.4 Supabase projects
+
+Many of our projects use Supabase, where **Row Level Security (RLS) is the main
+access control** — every table in the `public` schema is exposed over an
+auto-generated REST API, and the `service_role` key bypasses RLS entirely. Generic
+linters know none of this, so the gate ships a **built-in Supabase check** plus a
+**Supabase AI reviewer**. Nothing to install; the check auto-detects Supabase (a
+`supabase/` dir, `@supabase/*` in `package.json`, or `supabase`/`createClient` in
+the scanned code) and shows `SKIP` on projects that don't use it.
+
+**Deterministic check (`supabase`)** — the concrete "always/never" signatures,
+scanned over your changed code and `.sql` migration files:
+
+| It flags | Severity | Why |
+|---|---|---|
+| `service_role`/secret key behind a browser-exposed env var (`NEXT_PUBLIC_`, `VITE_`, `REACT_APP_`, …) | HIGH | Ships full-DB-access credentials to the client |
+| A hardcoded secret key (`sb_secret_…`) or a `service_role` JWT in source | HIGH | Leaks a key that bypasses RLS |
+| `service_role` referenced in a client (`'use client'`) file | HIGH | The service role must never reach the browser |
+| `... disable row level security` in a migration | HIGH | Table becomes fully readable/writable with the anon key |
+| `create table …` with no `enable row level security` in the same file | MEDIUM | New table left unprotected |
+| `grant … to anon`/`public` (write = MEDIUM, read = LOW) | MED/LOW | Exposes data via the REST API; prefer RLS policies |
+| `service_role` referenced inside a `create policy` | MEDIUM | Likely a misconfiguration — service_role already bypasses RLS |
+
+> The anon key hardcoded in client code is **not** flagged — it's designed to be
+> public. RLS, not key secrecy, is what protects your data.
+
+**AI reviewer (`supabase`)** — runs under `qg --ai-full` and handles the judgment
+calls a regex can't: RLS *coverage & correctness* (`USING (true)`, missing
+`WITH CHECK`), ownership/IDOR (queries not scoped to `auth.uid()`),
+`security definer` RPC functions, public storage buckets, and sensitive columns
+exposed to clients.
+
+Disable it like any other check via `quality-gate.config.json`
+(`"disabled_checks": ["supabase"]`). To make the AI review context-aware, add your
+Supabase rules to the project's `CLAUDE.md` (the template includes a Supabase
+section — see [§9.2](#92-give-claude-your-projects-rules--claudemd)).
+
 ---
 
 ## 10. Automating with GitHub (step by step)
@@ -472,7 +512,9 @@ A ready-made GitHub Actions workflow ships with the tool at
 - runs on **every PR** (and manual dispatch),
 - scans the **PR diff** (`--base origin/<base_branch>`),
 - is **`continue-on-error: true`** — it never fails the build (yet),
-- uploads the report as a downloadable artifact.
+- uploads the report as a downloadable artifact, **and**
+- **posts the report straight onto the PR as a comment** (updating the same
+  comment on re-runs, so the PR stays tidy) — see [§13.1](#131-post-the-report-as-a-pr-comment-built-in).
 
 **Set it up in a project:**
 
@@ -489,9 +531,13 @@ A ready-made GitHub Actions workflow ships with the tool at
    ```
 
 3. Commit and open a PR. The workflow clones the scanner from
-   `https://github.com/sarthakkk1212/quality-gate.git` at run time and scans the
-   PR's diff. Download the **"quality-report"** artifact from the PR's Checks tab
-   to read it.
+   `https://github.com/sarthakkk1212/quality-gate.git` at run time, scans the
+   PR's diff, and **posts the results as a PR comment automatically**. (The full
+   report is also downloadable as the **"quality-report"** artifact from the
+   Checks tab.) For the comment to post you need repo **Settings → Actions →
+   General → Workflow permissions → "Read and write permissions"** enabled — the
+   workflow already declares `pull-requests: write`. Note: PRs opened *from forks*
+   get a read-only token, so the comment step is skipped on those.
 
 4. **To run the deterministic tools in CI too**, uncomment the install step in the
    workflow and list what the repo uses:
@@ -623,39 +669,39 @@ Open a test PR after installing the workflow ([§10 Level 3](#level-3--ci-on-eve
 
 ## 13. Extending it: team visibility, PR comments, history, dashboards
 
-Today the tool gives you **local reports** and **CI artifacts**. To make runs, PRs,
-and history visible to the *whole team*, here are the next steps in priority order.
-Each is additive — none changes the read-only core.
+Today the tool gives you **local reports**, **CI artifacts**, and **PR comments**
+(§13.1 is now built in). To make history and metrics visible to the *whole team*,
+here are the next steps in priority order. Each is additive — none changes the
+read-only core.
 
-### 13.1 Post the report as a PR comment (highest value, do this first)
+### 13.1 Post the report as a PR comment (built in ✅)
 
-Instead of making people download an artifact, comment the summary right on the PR.
-Add this step to `quality-scan.yml` after the scan (it needs
-`permissions: pull-requests: write`):
+**This ships in `quality-scan.yml` already** — no extra setup beyond turning on
+write permissions. The workflow's "Comment report on PR" step reads
+`quality-reports/latest.md` and posts it straight onto the PR, so nobody has to
+download an artifact. It:
 
-```yaml
-permissions:
-  contents: read
-  pull-requests: write        # add this
+- **updates the same comment on every re-run** (tagged with a hidden
+  `<!-- marketink-quality-gate -->` marker) instead of piling up new comments,
+- **truncates safely** if the report exceeds GitHub's ~65k-char comment limit
+  (pointing you to the full artifact),
+- runs with `if: always()`, so you still get a comment even when there are
+  findings.
 
-# ... after the "Run Quality Gate" step:
-      - name: Comment report on PR
-        if: always() && github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const body = fs.readFileSync('quality-reports/latest.md', 'utf8');
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: "## 🔍 Quality Gate\n\n" + body.slice(0, 60000),
-            });
-```
+**To enable it**, two things must be true (both one-time, per repo):
 
-Now every PR shows the findings inline — no clicking required. This is the single
-biggest "everyone can see it" win.
+1. The workflow declares `pull-requests: write` — ✅ already added.
+2. Repo **Settings → Actions → General → Workflow permissions** must be set to
+   **"Read and write permissions"**. If your org defaults to read-only, the
+   permission line alone won't be enough.
+
+**Limitation:** PRs opened *from forks* get a read-only token from GitHub for
+security, so the comment step is silently skipped there (the artifact still
+uploads). It works for branches pushed to the same repo. Supporting fork PRs would
+require a `pull_request_target` workflow, which needs extra care — not enabled by
+default.
+
+This is the single biggest "everyone can see it" win, and it's live now.
 
 ### 13.2 Keep history
 
@@ -721,7 +767,7 @@ it at run time). Improve a prompt once → every project benefits. Don't copy
 # --- daily (local) ---
 qg                          # scan my changes + AI review  ← use this most
 qg --no-ai                  # faster, offline, just linters/types/security
-qg --ai-full                # deep 5-reviewer AI pass before an important PR
+qg --ai-full                # deep 6-reviewer AI pass before an important PR
 qg --staged                 # only staged changes (pre-commit)
 qg --base v1.4.0            # everything since a release
 qg --path ..\repo --all --no-ai   # one-time full audit of another repo
@@ -756,17 +802,22 @@ ERROR = tool crashed/timed out   OFF = disabled in config
 Being honest about this keeps expectations right.
 
 **Built and working today:**
-- ✅ `scan.py` — read-only scanner with 10 deterministic checks + Claude AI review.
-- ✅ Wrappers (`quality.ps1`, `quality`), optional config, 5 AI prompt reviewers.
+- ✅ `scan.py` — read-only scanner with 11 deterministic checks + Claude AI review.
+- ✅ **Built-in Supabase check** — static RLS / service-role-key / anon-grant
+  detection over code + `.sql` migrations, plus a dedicated AI reviewer
+  ([§9.4](#94-supabase-projects)). No install, auto-skips non-Supabase projects.
+- ✅ Wrappers (`quality.ps1`, `quality`), optional config, 6 AI prompt reviewers.
 - ✅ `CLAUDE.template.md` standards template.
 - ✅ GitHub Actions CI workflow (non-blocking, uploads artifact).
+- ✅ **PR-comment posting** — the workflow comments the report on every PR and
+  updates the same comment on re-runs ([§13.1](#131-post-the-report-as-a-pr-comment-built-in)).
 - ✅ Markdown + JSON + timestamped reports.
 
 **Roadmap (described in `QUALITY_GATE_PLAYBOOK.md`, not yet in `scan.py`):**
 - ⏳ A `quality init` command that bootstraps a project automatically.
 - ⏳ A three-level `quality quick / review / release` CLI wrapper.
 - ⏳ `.claude/commands/` slash-command reviewers and a pre-commit-framework config.
-- ⏳ PR-comment posting, AI-in-CI, and a metrics dashboard (see [§13](#13-extending-it-team-visibility-pr-comments-history-dashboards)).
+- ⏳ AI-in-CI (Claude review on every PR) and a metrics dashboard (see [§13](#13-extending-it-team-visibility-pr-comments-history-dashboards)).
 
 For the *vision and the evidence behind it*, read `QUALITY_GATE_PLAYBOOK.md` (the
 "how" at design level) and `RESEARCH_PAPER.md` (the "why"). **This handbook is the

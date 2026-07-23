@@ -5,5 +5,5 @@
   "_base_ref": "Git ref to diff against for scoped scans. null = auto-detect (origin/main, main, ...).",
 
   "disabled_checks": [],
-  "_disabled_checks": "List any check ids you never want to run, e.g. [\"gitleaks\", \"npm-audit\"]. Valid ids: ruff, ruff-format, mypy, bandit, pip-audit, eslint, prettier, tsc, npm-audit, gitleaks."
+  "_disabled_checks": "List any check ids you never want to run, e.g. [\"gitleaks\", \"npm-audit\"]. Valid ids: ruff, ruff-format, mypy, bandit, pip-audit, eslint, prettier, tsc, npm-audit, gitleaks, supabase."
 }

@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -173,8 +174,182 @@ def local_bin(target, name):
 
 
 # --------------------------------------------------------------------------- #
+#  Built-in Supabase security check (pure-Python, read-only, no external tool)
+#
+#  Generic linters know nothing about Supabase, so this fills the gap with the
+#  concrete "always/never" anti-patterns a live-DB audit would catch — adapted
+#  to what is visible in code + SQL migrations. It reads files only; it never
+#  connects to a database and never writes anything. Judgment calls (RLS
+#  coverage, IDOR, RPC logic) are left to the AI reviewer in prompts/supabase.md.
+# --------------------------------------------------------------------------- #
+SUPA_CODE_EXT = (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".vue", ".svelte", ".astro", ".py")
+SUPA_SQL_EXT = (".sql",)
+_SUPA_MAX_FILE_BYTES = 2_000_000
+
+# Bundler prefixes that ship an env var to the browser. A service/secret key
+# behind one of these is a critical leak of full database access.
+_PUBLIC_ENV_PREFIXES = ("NEXT_PUBLIC_", "VITE_", "REACT_APP_", "EXPO_PUBLIC_", "PUBLIC_", "GATSBY_")
+
+# Secrets / key exposure (any text)
+_RE_SB_SECRET = re.compile(r"sb_secret_[A-Za-z0-9]{8,}")
+_RE_PUBLIC_SERVICE = re.compile(
+    r"(?:" + "|".join(_PUBLIC_ENV_PREFIXES) + r")[A-Z0-9_]*(?:SERVICE_ROLE|SERVICE_KEY)")
+_RE_SERVICE_ROLE = re.compile(r"service[_-]?role", re.I)
+_RE_JWT = re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,}")
+
+# SQL migration anti-patterns
+_RE_DISABLE_RLS = re.compile(r"disable\s+row\s+level\s+security", re.I)
+_RE_ENABLE_RLS_TABLE = re.compile(
+    r'alter\s+table\s+(?:only\s+)?(?:if\s+exists\s+)?["\']?([A-Za-z0-9_.]+)["\']?'
+    r'\s+enable\s+row\s+level\s+security', re.I)
+_RE_CREATE_TABLE = re.compile(
+    r'create\s+table\s+(?:if\s+not\s+exists\s+)?["\']?([A-Za-z0-9_.]+)', re.I)
+_RE_GRANT_ANON = re.compile(r"grant\s+(.+?)\s+on\s+(.+?)\s+to\s+([^;]*\b(?:anon|public)\b)", re.I)
+_RE_CREATE_POLICY = re.compile(r"create\s+policy\b", re.I)
+
+# Severity ordering for output.
+_SEV_ORDER = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+
+
+def _supa_read(path):
+    try:
+        if os.path.getsize(path) > _SUPA_MAX_FILE_BYTES:
+            return None
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except Exception:
+        return None
+
+
+def _looks_like_supabase(target, texts):
+    """Cheap heuristic: does this project use Supabase at all?"""
+    if os.path.isdir(os.path.join(target, "supabase")):
+        return True
+    pkg = os.path.join(target, "package.json")
+    if os.path.isfile(pkg):
+        t = _supa_read(pkg)
+        if t and "@supabase/" in t:
+            return True
+    for content in texts.values():
+        low = content.lower()
+        if "supabase" in low or "createclient(" in low:
+            return True
+    return False
+
+
+def scan_supabase(target, files, scope_all):
+    """Return (status, text, command). Read-only regex scan for Supabase risks."""
+    candidates = walk_files(target) if scope_all else list(files)
+
+    def relevant(rel):
+        low = rel.lower()
+        base = os.path.basename(low)
+        return (low.endswith(SUPA_CODE_EXT) or low.endswith(SUPA_SQL_EXT)
+                or base.startswith(".env") or base == "config.toml")
+
+    texts = {}
+    for rel in candidates:
+        if not relevant(rel):
+            continue
+        ap = os.path.join(target, rel)
+        if os.path.isfile(ap):
+            c = _supa_read(ap)
+            if c is not None:
+                texts[rel] = c
+
+    if not _looks_like_supabase(target, texts):
+        return "SKIP", "no Supabase usage detected in scope", None
+
+    seen = set()
+    findings = []  # (severity, rel, line_no, message)
+
+    def add(sev, rel, line_no, msg):
+        key = (rel, line_no, msg)
+        if key not in seen:
+            seen.add(key)
+            findings.append((sev, rel, line_no, msg))
+
+    for rel, content in texts.items():
+        is_sql = rel.lower().endswith(SUPA_SQL_EXT)
+        lines = content.splitlines()
+        # Next.js "use client" directive marks a browser bundle.
+        client_exposed = re.search(r"^\s*['\"]use client['\"]", content[:400], re.M) is not None
+        has_policy = bool(_RE_CREATE_POLICY.search(content)) if is_sql else False
+
+        for i, line in enumerate(lines, 1):
+            # --- secret / key exposure (all file types) ---
+            if _RE_SB_SECRET.search(line):
+                add("HIGH", rel, i,
+                    "Hardcoded Supabase secret API key (sb_secret_...). Move it to a "
+                    "server-only env var; never commit it.")
+            if _RE_PUBLIC_SERVICE.search(line):
+                add("HIGH", rel, i,
+                    "service_role key exposed through a browser-exposed env var "
+                    "(NEXT_PUBLIC_/VITE_/REACT_APP_/...). This ships full DB access to the client.")
+            if _RE_JWT.search(line) and _RE_SERVICE_ROLE.search(line):
+                add("HIGH", rel, i,
+                    "Likely hardcoded service_role key (JWT). The service role bypasses RLS - "
+                    "keep it server-side and out of source.")
+            if client_exposed and not is_sql and _RE_SERVICE_ROLE.search(line):
+                add("HIGH", rel, i,
+                    "service_role referenced in a client-side ('use client') file. "
+                    "The service role must never reach the browser.")
+
+            # --- SQL migration anti-patterns ---
+            if is_sql:
+                if _RE_DISABLE_RLS.search(line):
+                    add("HIGH", rel, i,
+                        "Row Level Security disabled. The table becomes fully readable/writable "
+                        "with the public anon key.")
+                gm = _RE_GRANT_ANON.search(line)
+                if gm:
+                    privs = gm.group(1).strip()
+                    write = re.search(r"\b(insert|update|delete|all|truncate|references|trigger)\b",
+                                      privs, re.I)
+                    sev = "MEDIUM" if write else "LOW"
+                    add(sev, rel, i,
+                        f"GRANT to '{gm.group(3).strip()}' ({privs}). Grants to anon/public expose "
+                        "data via the REST API; prefer RLS policies over broad grants.")
+                if has_policy and _RE_SERVICE_ROLE.search(line):
+                    add("MEDIUM", rel, i,
+                        "service_role referenced inside a policy. service_role already bypasses "
+                        "RLS, so this policy is likely a misconfiguration.")
+
+        # create table without enabling RLS (file-level heuristic)
+        if is_sql:
+            # Tables that get RLS enabled somewhere in this file (by short name).
+            rls_tables = {
+                m.group(1).split(".")[-1].lower()
+                for m in _RE_ENABLE_RLS_TABLE.finditer(content)
+            }
+            for m in _RE_CREATE_TABLE.finditer(content):
+                tbl = m.group(1)
+                short = tbl.split(".")[-1].lower()
+                line_no = content[:m.start()].count("\n") + 1
+                if short not in rls_tables:
+                    add("MEDIUM", rel, line_no,
+                        f"Table '{tbl}' created without enabling Row Level Security in this file. "
+                        "Add: alter table ... enable row level security; and define policies.")
+
+    if not findings:
+        return "PASS", "No Supabase anti-patterns found in scope.", "built-in Supabase static analysis"
+
+    findings.sort(key=lambda f: (_SEV_ORDER.get(f[0], 9), f[1], f[2]))
+    counts = {}
+    for sev, *_ in findings:
+        counts[sev] = counts.get(sev, 0) + 1
+    summary = ", ".join(f"{counts[s]} {s.lower()}" for s in ("HIGH", "MEDIUM", "LOW") if s in counts)
+    out = [f"Found {len(findings)} Supabase issue(s): {summary}.", ""]
+    for sev, rel, line_no, msg in findings:
+        out.append(f"[{sev}] {rel}:{line_no}")
+        out.append(f"    {msg}")
+    return "FINDINGS", "\n".join(out), "built-in Supabase static analysis"
+
+
+# --------------------------------------------------------------------------- #
 #  Check specifications
 #  level: "file" (runs on matching files) | "repo" (runs once if triggered)
+#         | "builtin" (pure-Python check, no external tool)
 #  Every argv is READ-ONLY. Do not ever add fix/write flags here.
 # --------------------------------------------------------------------------- #
 def build_specs():
@@ -232,6 +407,10 @@ def build_specs():
              resolve=lambda t: global_bin("gitleaks"),
              argv=lambda e, f: [e, "detect", "--no-git", "--no-banner",
                                 "--redact", "--source", "."]),
+
+        # ---- Supabase (built-in, no external tool required) ----
+        dict(id="supabase", title="Supabase - security & RLS", cat="security", lang="any",
+             level="builtin", builtin=scan_supabase),
     ]
 
 
@@ -264,6 +443,14 @@ def run_checks(target, files, scope_all, disabled, timeout):
             results.append(_result(spec, "OFF", "disabled in config", None, None))
             continue
 
+        # Built-in checks run in-process (no external tool to resolve).
+        if spec.get("level") == "builtin":
+            status, text, cmd = spec["builtin"](target, files, scope_all)
+            note = text if status in ("SKIP", "OFF") else None
+            output = None if status in ("SKIP", "OFF") else text
+            results.append(_result(spec, status, note, output, None, command=cmd))
+            continue
+
         exe = spec["resolve"](target)
         if not exe:
             where = "in node_modules" if spec["lang"] == "js" and spec["level"] == "file" \
@@ -291,11 +478,11 @@ def run_checks(target, files, scope_all, disabled, timeout):
         results.append(_result(spec, status_from(rc), None, out, argv))
     return results
 
-def _result(spec, status, note, output, argv):
+def _result(spec, status, note, output, argv, command=None):
     return {
         "id": spec["id"], "title": spec["title"], "category": spec["cat"],
         "status": status, "note": note, "output": output or "",
-        "command": " ".join(argv) if argv else None,
+        "command": command or (" ".join(argv) if argv else None),
     }
 
 
@@ -329,7 +516,7 @@ def ai_review(scanner_dir, target, diff, run_all, timeout):
     prompt_dir = Path(scanner_dir) / ".quality" / "prompts"
     names = ["review"]
     if run_all:
-        names = ["review", "security", "architecture", "performance", "business-logic"]
+        names = ["review", "security", "architecture", "performance", "business-logic", "supabase"]
 
     reviews = []
     # Run Claude in a throwaway directory so it has NOTHING in the target to touch.

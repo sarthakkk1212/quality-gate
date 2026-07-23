@@ -32,6 +32,18 @@
 - All external input is untrusted until validated.
 - <auth/authorization expectations>
 
+## Supabase rules  <!-- delete this section if the project doesn't use Supabase -->
+- Every table in the `public` schema has RLS enabled and at least one policy.
+- The `service_role` key is used only in trusted server code — never in client
+  ('use client') files, never behind a browser-exposed env var (`NEXT_PUBLIC_`,
+  `VITE_`, `REACT_APP_`, …), and never hardcoded.
+- Row-access policies always scope to the owner (`auth.uid()`) or tenant id;
+  never `USING (true)`, and INSERT/UPDATE policies always set `WITH CHECK`.
+- `security definer` functions perform their own authorization check and validate
+  every argument.
+- Only expose the columns clients need — keep tokens, hashes, and internal flags
+  out of client-readable views; prefer RLS policies over broad `grant … to anon`.
+
 ## Testing expectations
 - Every new feature ships with tests for its core paths and key edge cases.
 - Cover error/failure behavior, not just the happy path.

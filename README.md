@@ -64,6 +64,7 @@ On Windows you can use `./quality.ps1 --all`; on macOS/Linux `./quality --all`.
 | Types (JS/TS) | `tsc --noEmit` | read-only | project |
 | Dependencies (JS/TS) | `npm audit` | read-only | project |
 | Secrets | `gitleaks detect` | read-only | working tree |
+| Supabase (RLS/keys/grants) | *built-in* (no tool) | read-only | changed code + `.sql` |
 | AI review | `claude -p` | read-only | the diff |
 
 Deterministic tools own anything mechanical. The AI review is reserved for
@@ -81,7 +82,7 @@ directory so it has nothing in your project to touch.
 --staged        scan only git-staged changes
 --base REF      git base ref for the diff (default: auto-detect origin/main…)
 --no-ai         skip the AI review
---ai-full       run all specialized AI reviewers (security/arch/perf/logic)
+--ai-full       run all specialized AI reviewers (security/arch/perf/logic/supabase)
 --no-report     print to the console only; write no files anywhere
 --out DIR       report output directory (default: ./quality-reports)
 --strict        exit 1 if any findings (for optional CI gating)

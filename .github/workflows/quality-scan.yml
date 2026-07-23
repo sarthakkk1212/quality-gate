@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write        # needed to post the report as a PR comment
 
 jobs:
   scan:
@@ -28,8 +29,8 @@ jobs:
 
       # Optional: install the deterministic tools you want CI to run. The scanner
       # skips any tool that isn't present, so install only what this repo uses.
-      # - name: Install scanners
-      #   run: pip install ruff mypy bandit pip-audit
+      - name: Install scanners
+        run: pip install ruff mypy bandit pip-audit
 
       - name: Fetch Quality Gate scanner
         run: git clone --depth 1 https://github.com/sarthakkk1212/quality-gate.git .quality-gate-tool
@@ -49,3 +50,45 @@ jobs:
         with:
           name: quality-report
           path: quality-reports/
+
+      # Post the report straight onto the PR so nobody has to download the
+      # artifact. Updates the same comment on re-runs instead of adding new ones.
+      - name: Comment report on PR
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = 'quality-reports/latest.md';
+            const marker = '<!-- marketink-quality-gate -->';
+
+            let report;
+            try {
+              report = fs.readFileSync(path, 'utf8');
+            } catch {
+              report = '_Quality Gate produced no report (the scan step may have failed to run)._';
+            }
+
+            // GitHub caps a comment at 65536 chars; leave room for the wrapper.
+            const MAX = 60000;
+            if (report.length > MAX) {
+              report = report.slice(0, MAX) +
+                '\n\n_…report truncated. Download the full **quality-report** artifact from the Checks tab._';
+            }
+
+            const body = `${marker}\n## 🔍 MarketInk Quality Gate\n\n${report}`;
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+
+            // Reuse our previous comment if there is one (keeps the PR tidy).
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number, per_page: 100,
+            });
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
