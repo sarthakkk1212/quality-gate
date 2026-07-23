@@ -38,8 +38,8 @@ code you just wrote** (not the whole codebase), plus an AI review of your diff.
 
 ## 2. Prerequisites
 
-- **Python 3.8+** — the only hard requirement. The scanner itself has zero
-  dependencies.
+- **Node.js 18+** (20+ recommended) — the only hard requirement. The scanner
+  itself has zero dependencies (no `npm install`).
 - **The check tools are optional.** Install only the ones a given project uses;
   the gate runs what it finds and skips the rest.
 
@@ -68,7 +68,7 @@ winget install gitleaks.gitleaks        # Windows
 The scanner lives here (its own repo):
 
 ```
-E:\MarketInk\Quality_Gate\quality-gate\scan.py
+E:\MarketInk\Quality_Gate\quality-gate\scan.js
 ```
 
 You do **not** copy it into every project. You point it at a project with
@@ -84,18 +84,18 @@ So there are two comfortable ways to work:
 **Option A — stand in the project you're scanning (most intuitive):**
 ```powershell
 cd E:\path\to\my-project
-python E:\MarketInk\Quality_Gate\quality-gate\scan.py
+node E:\MarketInk\Quality_Gate\quality-gate\scan.js
 # report → E:\path\to\my-project\quality-reports\latest.md
 ```
 
 **Option B — stand in the tool folder, scan from outside (zero-touch):**
 ```powershell
 cd E:\MarketInk\Quality_Gate\quality-gate
-python scan.py --path E:\path\to\my-project
+node scan.js --path E:\path\to\my-project
 # report → E:\MarketInk\Quality_Gate\quality-gate\quality-reports\latest.md
 ```
 
-Windows shortcut wrapper (same as `python scan.py`, passes all args through):
+Windows shortcut wrapper (same as `node scan.js`, passes all args through):
 ```powershell
 E:\MarketInk\Quality_Gate\quality-gate\quality.ps1 --path E:\path\to\my-project
 ```
@@ -104,7 +104,7 @@ On macOS/Linux the equivalent is `./quality`.
 > **Tip:** make it a one-word command. Add a PowerShell function to your
 > `$PROFILE`:
 > ```powershell
-> function qg { python E:\MarketInk\Quality_Gate\quality-gate\scan.py @args }
+> function qg { node E:\MarketInk\Quality_Gate\quality-gate\scan.js @args }
 > ```
 > Then from any project: `qg` (scan changes) or `qg --all` (full audit).
 
@@ -187,7 +187,7 @@ The **AI Review** section (when present) is Claude's prose analysis of your diff
 
 ## 7. Configuration (optional)
 
-`quality-gate.config.json` (next to `scan.py`) has two optional knobs. Delete the
+`quality-gate.config.json` (next to `scan.js`) has two optional knobs. Delete the
 file entirely and safe defaults still apply.
 
 ```json
@@ -243,7 +243,7 @@ Here's a line-by-line read so the tool makes sense:
 **Net:** the tool worked perfectly — you just pointed it at "everything" on a repo
 missing most tools. Try this instead, from inside a repo you're editing:
 ```powershell
-qg               # or: python E:\...\scan.py --path .
+qg               # or: node E:\...\scan.js --path .
 ```
 You'll get a short, relevant list plus an AI review of your actual changes.
 
@@ -260,7 +260,7 @@ Warns you at commit time but never blocks. Create
 ```bash
 #!/usr/bin/env bash
 # Scan staged changes, print advice, never block the commit.
-python /e/MarketInk/Quality_Gate/quality-gate/scan.py --staged --no-ai --no-report
+node /e/MarketInk/Quality_Gate/quality-gate/scan.js --staged --no-ai --no-report
 exit 0   # always succeed — this is advisory
 ```
 
@@ -271,7 +271,7 @@ Blocks a push if there are findings in your changes. Create
 ```bash
 #!/usr/bin/env bash
 # Block the push if the scanner finds issues in the diff.
-python /e/MarketInk/Quality_Gate/quality-gate/scan.py --no-ai --strict
+node /e/MarketInk/Quality_Gate/quality-gate/scan.js --no-ai --strict
 # --strict makes the scanner exit 1 on findings, which aborts the push.
 ```
 
@@ -336,7 +336,7 @@ qg --path ..\repo --all --no-ai   # one-time full audit of another repo
 qg --strict                 # exit 1 on findings (hooks/CI gating)
 qg --no-report              # console only, write nothing
 
-# qg = python E:\MarketInk\Quality_Gate\quality-gate\scan.py
+# qg = node E:\MarketInk\Quality_Gate\quality-gate\scan.js
 # Report → ./quality-reports/latest.md (in the folder you ran it from)
 # It never edits code, never touches git, never installs anything.
 ```

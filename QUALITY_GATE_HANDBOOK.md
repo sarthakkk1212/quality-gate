@@ -34,7 +34,7 @@
 
 ## 1. What this is in 60 seconds
 
-The Quality Gate is a **single Python script** (`scan.py`) that:
+The Quality Gate is a **single Node script** (`scan.js`, zero npm dependencies) that:
 
 - Runs the code-quality tools you already know — linters, type checkers, security
   scanners, dependency auditors — all in **check-only** mode.
@@ -50,7 +50,7 @@ you choose. That's why it's safe to run on *any* repo, including production, at 
 time.
 
 ```bash
-python scan.py            # scan what you changed + AI review → report
+node scan.js            # scan what you changed + AI review → report
 ```
 
 ---
@@ -127,10 +127,10 @@ can*, and never let the same mistake through twice.
 
 Follow this exactly the first time. It works on Windows, macOS, and Linux.
 
-### Step 1 — Confirm Python (the only hard requirement)
+### Step 1 — Confirm Node (the only hard requirement)
 
 ```bash
-python --version      # need 3.8+  (try python3 if python isn't found)
+node --version        # need 18+  (20+ recommended)
 ```
 
 That's the *only* thing the scanner itself needs. Everything else is optional.
@@ -140,7 +140,7 @@ That's the *only* thing the scanner itself needs. Everything else is optional.
 The scanner lives in its own folder. On this machine it's already here:
 
 ```
-E:\MarketInk\Quality_Gate\quality-gate\scan.py
+E:\MarketInk\Quality_Gate\quality-gate\scan.js
 ```
 
 On a new machine, clone it once:
@@ -155,12 +155,12 @@ You'll run this constantly, so give it a short alias.
 
 **Windows (PowerShell)** — add to your `$PROFILE`:
 ```powershell
-function qg { python E:\MarketInk\Quality_Gate\quality-gate\scan.py @args }
+function qg { node E:\MarketInk\Quality_Gate\quality-gate\scan.js @args }
 ```
 
 **macOS / Linux** — add to `~/.bashrc` or `~/.zshrc`:
 ```bash
-qg() { python3 /path/to/quality-gate/scan.py "$@"; }
+qg() { node /path/to/quality-gate/scan.js "$@"; }
 ```
 
 Reload your shell. Now from *any* project folder you just type `qg`.
@@ -235,7 +235,7 @@ your PATH. Without it, everything still works — the AI section just says "skip
 | AI review of diff | `claude` | ✅ | ✅ |
 
 React/Next are just JS/TS to the scanner — ESLint + Prettier + TypeScript cover
-them. The **Supabase** check is built into `scan.py` (pure Python, no install),
+them. The **Supabase** check is built into `scan.js` (pure JS, no install),
 auto-skips on non-Supabase projects, and statically flags the concrete anti-patterns
 a live-DB audit would catch — see [§9.4](#94-supabase-projects). See [§9](#9-configuring-it-per-project-ts--js--python--react--next) for
 stack-specific tips.
@@ -262,7 +262,7 @@ qg
 **Option B — stand in the tool folder, scan from outside (zero-touch):**
 ```powershell
 cd E:\MarketInk\Quality_Gate\quality-gate
-python scan.py --path E:\path\to\my-project
+node scan.js --path E:\path\to\my-project
 # report → E:\MarketInk\Quality_Gate\quality-gate\quality-reports\latest.md
 ```
 
@@ -335,7 +335,7 @@ different roles depending on *where* it runs.
 | Where | When it runs | What it's for | How |
 |---|---|---|---|
 | **Local (your machine)** | Whenever you want, before you commit/push | Fast feedback loop — fix your own issues before anyone sees them | You type `qg` |
-| **Git hooks (local, automatic)** | On `git commit` / `git push` | Safety net so you don't forget to run it | Hook calls `scan.py` (see [§10](#10-automating-with-github-step-by-step)) |
+| **Git hooks (local, automatic)** | On `git commit` / `git push` | Safety net so you don't forget to run it | Hook calls `scan.js` (see [§10](#10-automating-with-github-step-by-step)) |
 | **CI (GitHub, automatic)** | On every Pull Request | Team-wide, unskippable check — the source of truth before merge | GitHub Actions workflow |
 
 **Why both local and CI?**
@@ -363,7 +363,7 @@ There are two layers of configuration:
 
 ### 9.1 The scanner config (`quality-gate.config.json`)
 
-Lives next to `scan.py`. Delete it and safe defaults still apply.
+Lives next to `scan.js`. Delete it and safe defaults still apply.
 
 ```json
 {
@@ -484,7 +484,7 @@ Warns you at commit time but always lets the commit through. Create
 ```bash
 #!/usr/bin/env bash
 # Scan staged changes, print advice, never block the commit.
-python /e/MarketInk/Quality_Gate/quality-gate/scan.py --staged --no-ai --no-report
+node /e/MarketInk/Quality_Gate/quality-gate/scan.js --staged --no-ai --no-report
 exit 0   # always succeed — this is advisory
 ```
 
@@ -495,7 +495,7 @@ Create `<project>/.git/hooks/pre-push`:
 ```bash
 #!/usr/bin/env bash
 # Block the push if the scanner finds issues in the diff.
-python /e/MarketInk/Quality_Gate/quality-gate/scan.py --no-ai --strict
+node /e/MarketInk/Quality_Gate/quality-gate/scan.js --no-ai --strict
 # --strict makes the scanner exit 1 on findings, which aborts the push.
 ```
 
@@ -614,7 +614,7 @@ Don't take it on faith — prove it. Here are concrete checks, cheapest first.
 
 ```bash
 cd E:\MarketInk\Quality_Gate\quality-gate
-python scan.py --path . --no-ai
+node scan.js --path . --no-ai
 ```
 ✅ Expect: a summary table printed, and `quality-reports/latest.md` created. If you
 see that, the engine works.
@@ -737,7 +737,7 @@ Claude's context-aware review posted automatically — the fullest form of the g
 As adoption grows, keep the scanner, prompts, and `CLAUDE.template.md` in the
 single `quality-gate` repo and have every project reference it (CI already clones
 it at run time). Improve a prompt once → every project benefits. Don't copy
-`scan.py` into each repo by hand.
+`scan.js` into each repo by hand.
 
 ---
 
@@ -775,7 +775,7 @@ qg --strict                 # exit 1 on findings (hooks / CI gating)
 qg --no-report              # console only, write nothing
 
 # --- what it is ---
-# qg = python E:\MarketInk\Quality_Gate\quality-gate\scan.py
+# qg = node E:\MarketInk\Quality_Gate\quality-gate\scan.js
 # Report → ./quality-reports/latest.md (in the folder you ran it from)
 # READ-ONLY: never edits code, never touches git, never installs anything.
 
@@ -802,7 +802,7 @@ ERROR = tool crashed/timed out   OFF = disabled in config
 Being honest about this keeps expectations right.
 
 **Built and working today:**
-- ✅ `scan.py` — read-only scanner with 11 deterministic checks + Claude AI review.
+- ✅ `scan.js` — read-only scanner (Node, zero deps) with 11 deterministic checks + Claude AI review.
 - ✅ **Built-in Supabase check** — static RLS / service-role-key / anon-grant
   detection over code + `.sql` migrations, plus a dedicated AI reviewer
   ([§9.4](#94-supabase-projects)). No install, auto-skips non-Supabase projects.
@@ -813,7 +813,7 @@ Being honest about this keeps expectations right.
   updates the same comment on re-runs ([§13.1](#131-post-the-report-as-a-pr-comment-built-in)).
 - ✅ Markdown + JSON + timestamped reports.
 
-**Roadmap (described in `QUALITY_GATE_PLAYBOOK.md`, not yet in `scan.py`):**
+**Roadmap (described in `QUALITY_GATE_PLAYBOOK.md`, not yet in `scan.js`):**
 - ⏳ A `quality init` command that bootstraps a project automatically.
 - ⏳ A three-level `quality quick / review / release` CLI wrapper.
 - ⏳ `.claude/commands/` slash-command reviewers and a pre-commit-framework config.

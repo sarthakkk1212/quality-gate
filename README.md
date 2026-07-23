@@ -26,10 +26,16 @@ production repos — because it **never changes anything**.
 
 ## Requirements
 
-**Python 3.8+ and nothing else.** The scanner is a single dependency-free
-script. The actual checks are optional and auto-detected — install whichever a
-project uses (see [INTEGRATION.md](INTEGRATION.md)); the gate runs what's there
-and skips the rest.
+**Node.js 18+ and nothing else** (Node 20+ recommended). The scanner is a single
+dependency-free script — zero npm packages, Node built-ins only, so `node scan.js`
+just works with no `npm install`. The actual checks are optional and
+auto-detected — install whichever a project uses (see
+[INTEGRATION.md](INTEGRATION.md)); the gate runs what's there and skips the rest.
+
+> The language the tool is *written in* is unrelated to the languages it *scans*.
+> It's an orchestrator: it shells out to `ruff`/`mypy`/`bandit`/`pip-audit` for
+> Python projects and `eslint`/`prettier`/`tsc`/`npm audit` for JS/TS projects,
+> exactly the same way regardless of which stack it runs on.
 
 ---
 
@@ -37,13 +43,13 @@ and skips the rest.
 
 ```bash
 # Scan the changed files in the current repo:
-python scan.py
+node scan.js
 
 # Zero-touch scan of another project (nothing written into it):
-python scan.py --path ../some-service
+node scan.js --path ../some-service
 
 # Full health check of the whole project:
-python scan.py --all
+node scan.js --all
 ```
 
 On Windows you can use `./quality.ps1 --all`; on macOS/Linux `./quality --all`.

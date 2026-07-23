@@ -31,13 +31,13 @@ git clone https://github.com/MarketInk/quality-gate.git
 cd quality-gate
 
 # Scan another repo — reports land here in ./quality-reports, never in the target:
-python scan.py --path ../my-existing-service
+node scan.js --path ../my-existing-service
 
 # Whole-project health check:
-python scan.py --path ../my-existing-service --all
+node scan.js --path ../my-existing-service --all
 
 # Absolutely zero writes anywhere (console only):
-python scan.py --path ../my-existing-service --no-report
+node scan.js --path ../my-existing-service --no-report
 ```
 
 Read `quality-reports/latest.md`. That's it — the scanned project is untouched.
@@ -74,8 +74,8 @@ anything on their own and don't change how the app builds.
    .quality-gate-tool/
    ```
 
-4. **Run it locally** the same way as Mode A (`python /path/to/scan.py --path .`),
-   or vendor `scan.py` under `tools/` if you prefer it in-repo.
+4. **Run it locally** the same way as Mode A (`node /path/to/scan.js --path .`),
+   or vendor `scan.js` under `tools/` if you prefer it in-repo.
 
 Nothing here blocks commits or pushes. This gate is a **scanner**, not an
 enforcer — by design.
@@ -116,10 +116,10 @@ it's absent, the AI step is simply skipped.
 
 | Situation | Command |
 |---|---|
-| Before opening a PR | `python scan.py` (changed files + AI review) |
-| Quick check, no AI | `python scan.py --no-ai` |
-| Deep AI review | `python scan.py --ai-full` |
-| Auditing an existing repo | `python scan.py --path ../repo --all --no-ai` |
+| Before opening a PR | `node scan.js` (changed files + AI review) |
+| Quick check, no AI | `node scan.js --no-ai` |
+| Deep AI review | `node scan.js --ai-full` |
+| Auditing an existing repo | `node scan.js --path ../repo --all --no-ai` |
 | In CI on a PR | the provided workflow (scoped to the PR diff, non-blocking) |
 
 ---
@@ -143,6 +143,6 @@ it's absent, the AI step is simply skipped.
 ## Extending it
 
 - Add or edit AI reviewers in `.quality/prompts/`.
-- Add a deterministic check by appending one spec to `build_specs()` in
-  `scan.py`. **Only ever use read-only/check flags** — that invariant is what
+- Add a deterministic check by appending one spec to `buildSpecs()` in
+  `scan.js`. **Only ever use read-only/check flags** — that invariant is what
   makes this safe to run anywhere.
