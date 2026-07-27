@@ -1,62 +1,74 @@
 # MarketInk Quality Gate
 
-A **read-only code scanner** that runs your existing quality tools (linters,
-type checkers, security & dependency scanners) plus an optional scoped **AI
-review** with Claude, and produces one clean report.
+A **read-only code scanner** that runs your existing quality tools (linters, type
+checkers, security & dependency scanners) plus an optional scoped **AI review**
+with Claude, and produces one clean report.
 
-It is designed to be safe to run on **any project, at any time** — including
-production repos — because it **never changes anything**.
+It is a single Node script (`scan.js`, **zero npm dependencies**) that is safe to
+run on **any project, at any time** — including production repos — because it
+**never changes anything**.
+
+> **This README is the one and only doc.** Setup, features, daily usage,
+> onboarding, config, git/CI automation, and troubleshooting are all below.
 
 ---
 
-## Safety guarantees
+## Table of contents
+
+1. [What it is & safety guarantees](#1-what-it-is--safety-guarantees)
+2. [Features — what it runs](#2-features--what-it-runs)
+3. [Requirements & setup](#3-requirements--setup)
+4. [Quick start & daily usage](#4-quick-start--daily-usage)
+5. [Options / flags](#5-options--flags)
+6. [Reading the report](#6-reading-the-report)
+7. [Configuration](#7-configuration)
+8. [Supabase checks](#8-supabase-checks)
+9. [Onboarding a project & git automation](#9-onboarding-a-project--git-automation)
+10. [Troubleshooting](#10-troubleshooting)
+11. [Cheat sheet](#11-cheat-sheet)
+12. [Notes: migration & roadmap](#12-notes-migration--roadmap)
+
+---
+
+## 1. What it is & safety guarantees
+
+The Quality Gate splits code review in a way that plays to each tool's strength:
+
+- **Deterministic tools** (linters/type/security/dependency scanners) handle
+  everything mechanical — always right, cost nothing to run.
+- **Claude (AI)** handles judgment calls — reading *only your diff* against *your*
+  standards (from the project's `CLAUDE.md`) and explaining real issues in plain
+  language: security holes, broken business logic, bad architecture, perf traps.
+
+**The single most important fact: it is 100% read-only.**
 
 - ✅ **Never edits, formats, or fixes your code.** Every tool runs in check-only
   mode (`ruff check --no-fix`, `prettier --check`, `mypy`, `npm audit`,
-  `gitleaks detect`, …). There are no `--fix`/`--write` flags anywhere.
+  `gitleaks detect`, …). No `--fix`/`--write` flags anywhere.
 - ✅ **Never changes git state.** No add, commit, push, or checkout.
 - ✅ **Never installs anything.** It only runs tools already available.
-- ✅ **Can't break a build.** A missing tool is *skipped*, not failed. Exit code
-  is `0` by default; `--strict` (opt-in) is the only way it returns non-zero.
+- ✅ **Can't break a build.** A missing tool is *skipped*, not failed. Exit code is
+  `0` by default; `--strict` (opt-in) is the only way it returns non-zero.
 - ✅ **Zero-touch on the scanned project.** Point it at a repo from outside with
   `--path`; nothing is written into that repo. The only file it ever writes is a
   report, in an output folder you choose — or nothing at all with `--no-report`.
 
----
+### The mental model (four ideas explain 90% of it)
 
-## Requirements
+| Idea | What it means |
+|---|---|
+| **Read-only** | Runs everything in *check* mode. There is **no** `--fix`/`--write` anywhere. |
+| **Auto-detect** | It only runs a tool that's already installed. A missing tool becomes `SKIP`, never an error. A repo with no Python tools simply shows every Python row as `SKIP`. |
+| **Scoped by default** | With no flags it scans **only the files that changed** vs your base branch (`origin/main`, `main`, …) — you see issues in *new* code, not a wall of legacy noise ("clean as you code"). |
+| **AI is diff-based** | The Claude review only runs on a diff. `--all` disables AI on purpose (reviewing a whole repo would be noisy and expensive). |
 
-**Node.js 18+ and nothing else** (Node 20+ recommended). The scanner is a single
-dependency-free script — zero npm packages, Node built-ins only, so `node scan.js`
-just works with no `npm install`. The actual checks are optional and
-auto-detected — install whichever a project uses (see
-[INTEGRATION.md](INTEGRATION.md)); the gate runs what's there and skips the rest.
-
-> The language the tool is *written in* is unrelated to the languages it *scans*.
-> It's an orchestrator: it shells out to `ruff`/`mypy`/`bandit`/`pip-audit` for
-> Python projects and `eslint`/`prettier`/`tsc`/`npm audit` for JS/TS projects,
-> exactly the same way regardless of which stack it runs on.
+> The everyday use case: run it with **no flags** on a repo you're actively working
+> in, right before you commit or open a PR. You get a short list of issues **in the
+> code you just wrote**, plus an AI review of your diff.
 
 ---
 
-## Quick start
-
-```bash
-# Scan the changed files in the current repo:
-node scan.js
-
-# Zero-touch scan of another project (nothing written into it):
-node scan.js --path ../some-service
-
-# Full health check of the whole project:
-node scan.js --all
-```
-
-On Windows you can use `./quality.ps1 --all`; on macOS/Linux `./quality --all`.
-
----
-
-## What it runs
+## 2. Features — what it runs
 
 | Check | Tool | Mode | Scope |
 |---|---|---|---|
@@ -74,42 +86,478 @@ On Windows you can use `./quality.ps1 --all`; on macOS/Linux `./quality --all`.
 | AI review | `claude -p` | read-only | the diff |
 
 Deterministic tools own anything mechanical. The AI review is reserved for
-judgment — security, business logic, architecture, performance,
-maintainability — and is **scoped to the diff** and run in an isolated temp
-directory so it has nothing in your project to touch.
+judgment — security, business logic, architecture, performance, maintainability —
+and is **scoped to the diff** and run in an isolated temp directory so it has
+nothing in your project to touch.
+
+> React/Next are just JS/TS to the scanner — ESLint + Prettier + TypeScript cover
+> them. The language the tool is *written in* (Node) is unrelated to the languages
+> it *scans*: it's an orchestrator that shells out to each stack's tools.
 
 ---
 
-## Options
+## 3. Requirements & setup
+
+**Node.js 18+ and nothing else** (Node 20+ recommended). The scanner is a single
+dependency-free script — `node scan.js` just works, no `npm install`.
+
+The actual checks are **optional and auto-detected** — install whichever a project
+uses; the gate runs what's there and skips the rest.
+
+### The golden rule of where tools live
+
+| Tool type | Where it must be installed | Why |
+|---|---|---|
+| **Python** (`ruff`, `mypy`, `bandit`, `pip-audit`) | Global or the project's virtualenv (on your `PATH`) | The scanner looks for them on PATH |
+| **JS/TS** (`eslint`, `prettier`, `typescript`) | **Inside the project** as dev deps (`node_modules/.bin`) | The scanner looks in the project's `node_modules` |
+| **`gitleaks`** (secrets) | Global (on your `PATH`) | Works on any project |
+| **`claude`** (AI review) | Global (on your `PATH`) | Optional; if absent, AI step is skipped |
+
+```bash
+# Python projects (global, or inside the project's venv)
+pip install ruff mypy bandit pip-audit
+
+# JS/TS/React/Next projects — install as dev deps INSIDE the project
+npm install -D eslint prettier typescript
+
+# Secret scanning (one binary, any project)
+winget install gitleaks.gitleaks      # Windows
+brew install gitleaks                 # macOS
+# Linux: download from https://github.com/gitleaks/gitleaks/releases
+
+# AI review (optional): install Claude Code so `claude` is on PATH
+```
+
+> You don't need all of these. With **none** installed the scanner still runs,
+> skips everything gracefully, and tells you what to install.
+
+### Make it a one-word command (recommended)
+
+You'll run this constantly, so add an alias.
+
+**Windows (PowerShell `$PROFILE`):**
+```powershell
+function qg { node E:\MarketInk\Quality_Gate\quality-gate\scan.js @args }
+```
+
+**macOS / Linux (`~/.bashrc` or `~/.zshrc`):**
+```bash
+qg() { node /path/to/quality-gate/scan.js "$@"; }
+```
+
+Reload your shell — now from *any* project you just type `qg`. Wrappers also ship:
+`quality.ps1` on Windows and `./quality` on macOS/Linux (both pass all args through).
+
+---
+
+## 4. Quick start & daily usage
+
+Run from inside a repo, or point at one with `--path`.
+
+```bash
+# Scan the changed files in the current repo (+ AI review of the diff):
+node scan.js            # or: qg
+
+# Zero-touch scan of another project (nothing written into it):
+node scan.js --path ../some-service
+
+# Full health check of the whole project (no AI):
+node scan.js --all --no-ai
+```
+
+### Where reports land (the one thing people trip on)
+
+- **`--path`** = the project you *scan* (defaults to the current folder).
+- **Reports are written to the folder you *run the command from*** — as
+  `./quality-reports/` — **not** into the scanned project (unless you `cd` there or
+  pass `--out`).
+
+**Option A — stand inside the project (most intuitive):**
+```powershell
+cd E:\path\to\my-project
+qg      # report → E:\path\to\my-project\quality-reports\latest.md
+```
+
+**Option B — stand in the tool folder, scan from outside (zero-touch):**
+```powershell
+cd E:\MarketInk\Quality_Gate\quality-gate
+node scan.js --path E:\path\to\my-project
+# report → E:\MarketInk\Quality_Gate\quality-gate\quality-reports\latest.md
+```
+
+### The recipes you'll actually use
+
+| I want to… | Command |
+|---|---|
+| **Daily driver** — check my changes + AI review | `qg` |
+| Fast check, no AI (offline, just linters) | `qg --no-ai` |
+| Deep review before a big PR (all 6 AI reviewers) | `qg --ai-full` |
+| Check only what's staged (pre-commit) | `qg --staged` |
+| Review everything since a release/tag | `qg --base v1.4.0` |
+| Scan a **different** repo, zero-touch | `qg --path ../other-repo` |
+| One-time full audit of a legacy repo (no AI) | `qg --path ../repo --all --no-ai` |
+| Print only, write nothing | `qg --no-report` |
+| CI gate (exit 1 on findings) | `qg --staged --no-ai --strict` |
+| Slow/huge repo | `qg --timeout 1200` |
+| See all options | `qg --help` |
+
+> AI review needs `claude` on PATH and a **diff** — it's skipped on `--all` and on
+> an empty diff. Deterministic checks need their tools installed (§3); missing ones
+> just `SKIP`.
+
+---
+
+## 5. Options / flags
 
 ```
 --path PATH     repo to scan (default: current directory)
---all           scan the whole project instead of just changes
+--all           scan the whole project instead of just changes (disables AI)
 --staged        scan only git-staged changes
 --base REF      git base ref for the diff (default: auto-detect origin/main…)
 --no-ai         skip the AI review
---ai-full       run all specialized AI reviewers (security/arch/perf/logic/supabase)
+--ai-full       run all 6 specialized AI reviewers (review/security/architecture/
+                performance/business-logic/supabase)
 --no-report     print to the console only; write no files anywhere
 --out DIR       report output directory (default: ./quality-reports)
 --strict        exit 1 if any findings (for optional CI gating)
 --timeout SEC   per-tool timeout (default: 600)
 ```
 
-## How scope is decided
-
-- In a git repo, it scans **changed files vs the base branch** by default
+**How scope is decided:**
+- In a git repo it scans **changed files vs the base branch** by default
   (auto-detects `origin/main`, `main`, …). This keeps reports focused and is why
-  it's safe on large existing codebases — you see issues in *new* code, not a
-  wall of legacy noise (the "clean as you code" principle).
+  it's safe on large codebases — you see issues in *new* code, not legacy noise.
 - `--all` scans everything; `--staged` scans staged changes only.
 - Not a git repo? It automatically falls back to `--all`.
 
-## Configuration (optional)
-
-`quality-gate.config.json` lets you set a default `base_ref` and disable checks
-by id. Delete the file and the scanner still works with safe defaults.
+**Exit codes:** `0` = ran fine (even with findings). `1` = only with `--strict`
+*and* there were findings. `2` = bad `--path`. That's why it's safe in CI by
+default — it can't fail your build unless you opt in with `--strict`.
 
 ---
 
-See **[INTEGRATION.md](INTEGRATION.md)** for step-by-step setup on new and
-existing projects, installing the underlying tools, and CI.
+## 6. Reading the report
+
+Every run writes three files into `quality-reports/`:
+
+- **`latest.md`** — human-readable. **Read this one.**
+- **`latest.json`** — same data, machine-readable (`{ meta, checks, reviews }`), for
+  dashboards/automation.
+- **`report-YYYYMMDD-HHMMSS.md`** — timestamped history, one per run.
+
+Each check has a status:
+
+| Status | Meaning | What to do |
+|---|---|---|
+| **PASS** | Tool ran, found nothing | 🎉 Nothing to do |
+| **FINDINGS** | Tool ran, found issues | Read the **Details** section and fix them |
+| **SKIP** | Tool not installed, or nothing in scope | Install the tool (§3) if you want that check |
+| **ERROR** | Tool crashed or timed out | See §10 — usually a missing lockfile or a real timeout |
+| **OFF** | Disabled in config | You turned it off in `quality-gate.config.json` |
+
+- The **Details** section lists only `FINDINGS` and `ERROR` checks, each with the
+  *exact command it ran* and the raw output — so you can reproduce it yourself.
+- The **AI Review** section is Claude's prose analysis of your diff: each issue gets
+  a `file:line` estimate, a severity (high/med/low), the problem in one sentence,
+  and a concrete fix. If it found nothing, it says so.
+
+> A `SKIP` or `ERROR` never means the scanner failed — it means a *tool* was missing
+> or a *project* has a gap. The scanner cannot break your build and made no changes.
+
+---
+
+## 7. Configuration
+
+There are two layers:
+
+1. **The scanner's own config** — `quality-gate.config.json` (optional).
+2. **Each tool's own config** — the normal `ruff`, `eslint`, `tsconfig`, etc. files
+   in the project. The gate just *runs* these; it respects the project's existing
+   rules and never invents its own.
+
+### `quality-gate.config.json`
+
+Lives next to `scan.js`. Delete it and safe defaults still apply.
+
+```json
+{
+  "base_ref": null,
+  "disabled_checks": []
+}
+```
+
+- **`base_ref`** — default git ref to diff against. `null` = auto-detect
+  (`origin/main` → `main` → …). Set it if your default branch is unusual (e.g.
+  `"origin/develop"`).
+- **`disabled_checks`** — check ids you never want to run. Valid ids: `ruff`,
+  `ruff-format`, `mypy`, `bandit`, `pip-audit`, `eslint`, `prettier`, `tsc`,
+  `npm-audit`, `gitleaks`, `supabase`. Example — silence npm audit and secrets:
+  `["npm-audit", "gitleaks"]`.
+
+### Give Claude your project's rules — `CLAUDE.md`
+
+The highest-leverage config for context-aware review. Drop a `CLAUDE.md` at the
+project root and the AI review treats its rules as the standard it reviews against.
+A template ships with the tool:
+
+```bash
+cp quality-gate/.quality/standards/CLAUDE.template.md  <your-project>/CLAUDE.md
+```
+
+Fill in your stack, architecture rules, API conventions, and security rules as
+concrete "always/never" statements, e.g.:
+
+```
+- Never access the database directly from controllers. Always go through the service layer.
+- Never build SQL by string concatenation — use parameterized queries.
+- Every API endpoint validates its input before use.
+- Never log secrets, tokens, or PII.
+```
+
+The more concrete the rules, the more objective and useful the AI review.
+
+---
+
+## 8. Supabase checks
+
+Many of our projects use Supabase, where **Row Level Security (RLS) is the main
+access control** — every `public` table is exposed over an auto-generated REST API,
+and the `service_role` key bypasses RLS entirely. Generic linters know none of
+this, so the gate ships a **built-in Supabase check** plus a **Supabase AI
+reviewer**. Nothing to install; it auto-detects Supabase (a `supabase/` dir,
+`@supabase/*` in `package.json`, or `supabase`/`createClient` in the scanned code)
+and shows `SKIP` on projects that don't use it.
+
+**Deterministic check (`supabase`)** — concrete "always/never" signatures scanned
+over changed code + `.sql` migrations:
+
+| It flags | Severity | Why |
+|---|---|---|
+| `service_role`/secret key behind a browser-exposed env var (`NEXT_PUBLIC_`, `VITE_`, `REACT_APP_`, …) | HIGH | Ships full-DB-access credentials to the client |
+| A hardcoded secret key (`sb_secret_…`) or a `service_role` JWT in source | HIGH | Leaks a key that bypasses RLS |
+| `service_role` referenced in a client (`'use client'`) file | HIGH | The service role must never reach the browser |
+| `... disable row level security` in a migration | HIGH | Table becomes fully readable/writable with the anon key |
+| `create table …` with no `enable row level security` in the same file | MEDIUM | New table left unprotected |
+| `grant … to anon`/`public` (write = MEDIUM, read = LOW) | MED/LOW | Exposes data via the REST API; prefer RLS policies |
+| `service_role` referenced inside a `create policy` | MEDIUM | Likely a misconfiguration — service_role already bypasses RLS |
+
+> The anon key hardcoded in client code is **not** flagged — it's designed to be
+> public. RLS, not key secrecy, is what protects your data.
+
+**AI reviewer (`supabase`)** — runs under `qg --ai-full` and handles the judgment a
+regex can't: RLS *coverage & correctness* (`USING (true)`, missing `WITH CHECK`),
+ownership/IDOR (queries not scoped to `auth.uid()`), `security definer` RPC
+functions, public storage buckets, and sensitive columns exposed to clients. Add
+your Supabase rules to the project's `CLAUDE.md` to make it context-aware.
+
+---
+
+## 9. Onboarding a project & git automation
+
+Each project is onboarded **once**, then the gate runs automatically on `git commit`
+(fast, staged, deterministic) and `git push` (fuller review vs the base branch).
+You have three levels of automation — adopt them in order, as trust grows.
+
+### One-time onboarding (installs the hooks)
+
+Windows:
+```powershell
+cd quality-gate
+.\hooks\install-hooks.ps1 -Repo C:\path\to\your-project
+```
+macOS/Linux:
+```bash
+cd quality-gate
+./hooks/install-hooks.sh /path/to/your-project
+```
+
+The installer, entirely inside the target repo:
+1. Vendors the scanner into `<repo>/.quality-gate/` (so it travels with the repo).
+2. Installs `pre-commit` + `pre-push` into `<repo>/.githooks/`.
+3. Runs `git config core.hooksPath .githooks`.
+4. Adds `quality-reports/` to `.gitignore`.
+
+Then commit the setup so it ships with the repo:
+```bash
+git add .githooks .quality-gate .gitignore
+git commit -m "Add MarketInk Quality Gate hooks"
+```
+
+**Files added by this setup:**
+
+| File | Purpose |
+|---|---|
+| `<repo>/.quality-gate/` | vendored scanner (committed with the repo) |
+| `<repo>/.githooks/pre-commit` | fast staged scan on commit |
+| `<repo>/.githooks/pre-push` | fuller scan on push |
+
+### Level 1 & 2 — Local hooks (behaviour & toggles)
+
+| Hook | Default | Scope |
+|---|---|---|
+| `pre-commit` | notify only, never blocks | staged changes, no AI (fast) |
+| `pre-push` | notify only, never blocks | changed vs base, no AI |
+
+Set as env vars:
+- `QG_BLOCK=1` → **abort** the commit/push if there are findings.
+- `QG_AI=1` → include the Claude AI review on push (slower).
+- `git commit/push --no-verify` → bypass the hook (git's built-in escape hatch).
+
+> **The honest catch about "everyone gets it on pull":** git **deliberately** does
+> not run hooks that arrive via `clone`/`pull` (auto-running fetched code would be a
+> security hole). So there is always **one** action per developer per clone:
+> `git config core.hooksPath .githooks`. That's unavoidable for *local* hooks — which
+> is why CI (below) is the real enforcement layer.
+
+### Level 3 — CI on every Pull Request (the team standard, unskippable)
+
+A ready-made GitHub Actions workflow ships at `.github/workflows/quality-scan.yml`.
+It runs on every PR (and manual dispatch), scans the **PR diff**
+(`--base origin/<base_branch>`), is **`continue-on-error: true`** (never fails the
+build yet), uploads the report as a downloadable artifact, **and posts the report
+straight onto the PR as a comment** (updating the same comment on re-runs).
+
+**Set it up in a project:**
+
+1. Copy the workflow in:
+   ```powershell
+   Copy-Item E:\MarketInk\Quality_Gate\quality-gate\.github\workflows\quality-scan.yml `
+             E:\path\to\my-project\.github\workflows\
+   ```
+2. Add to the project's `.gitignore`:
+   ```
+   quality-reports/
+   .quality-gate-tool/
+   ```
+3. Commit and open a PR. The workflow clones the scanner from
+   `https://github.com/sarthakkk1212/quality-gate.git` at run time, scans the PR
+   diff, and posts results as a PR comment. For the comment to post, enable repo
+   **Settings → Actions → General → Workflow permissions → "Read and write
+   permissions"** (the workflow already declares `pull-requests: write`). PRs from
+   *forks* get a read-only token, so the comment step is skipped there (the artifact
+   still uploads).
+4. **To run deterministic tools in CI too**, uncomment the install step and list
+   what the repo uses (e.g. `pip install ruff mypy bandit pip-audit`; for JS/TS add
+   an `npm ci` step so `node_modules` exists).
+5. **Make it blocking later** — once the false-positive rate is low and the team
+   trusts the signal, flip `continue-on-error: true` → `false` (and add `--strict`)
+   so a PR with findings fails the check.
+
+> **AI review in CI** uses `--no-ai` by default because the `claude` CLI needs
+> credentials. To enable it: install Claude Code in the workflow, provide API
+> credentials via GitHub **Secrets**, and drop `--no-ai`.
+
+### The end-to-end flow (the whole point)
+
+```
+Developer writes code
+        │  (local)  qg  ──► fix issues in your own diff, privately. Fast loop.
+        ▼
+  git commit ──► pre-commit hook (advisory)            [Level 1]
+        ▼
+  git push   ──► pre-push hook (QG_BLOCK=1 blocks)      [Level 2]
+        ▼
+  Open PR ──► quality-scan.yml runs on the PR diff      [Level 3]
+        │       → report as artifact + PR comment
+        ▼
+  Reviewer reads findings + AI review, requests changes if needed
+        ▼
+  All clear → merge.  The defect never reaches main.
+```
+
+**Best practice: use both layers** — local hooks for instant feedback, CI as the
+enforcement that can't be skipped.
+
+---
+
+## 10. Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| **Everything Python shows `SKIP`** | Those tools aren't installed / not on PATH | `pip install ruff mypy bandit pip-audit` |
+| **A JS tool shows `SKIP`** even though installed globally | JS tools must be **local** to the project | `npm install -D eslint prettier typescript` inside the project |
+| **`npm audit` → ERROR `ENOLOCK`** | No `package-lock.json` | `npm i --package-lock-only` once, or disable `npm-audit` in config |
+| **`tsc` says "Could not find a declaration file for 'pg'"** | Real project gap, not a scanner bug | `npm i -D @types/pg` (the gate faithfully reports your `tsc` output) |
+| **AI review says "skipped"** | `claude` not on PATH, **or** you used `--all`, **or** the diff is empty | Install Claude Code; drop `--all` (AI is diff-based) |
+| **"not a git repository — scanning the whole project"** | You're outside a git repo | Expected; it falls back to `--all` automatically |
+| **A tool timed out (`ERROR`)** | Very large repo | Raise it: `qg --timeout 1200` |
+| **First run floods me with issues** | You used `--all` on a legacy repo | Drop `--all` — the default scans only *your* changes |
+| **Report didn't appear** | You used `--no-report`, or the out dir wasn't writable | Remove `--no-report`, or set `--out` to a writable folder |
+
+---
+
+## 11. Cheat sheet
+
+```
+# --- daily (local) ---
+qg                          # scan my changes + AI review  ← use this most
+qg --no-ai                  # faster, offline, just linters/types/security
+qg --ai-full                # deep 6-reviewer AI pass before an important PR
+qg --staged                 # only staged changes (pre-commit)
+qg --base v1.4.0            # everything since a release
+qg --path ..\repo --all --no-ai   # one-time full audit of another repo
+qg --strict                 # exit 1 on findings (hooks / CI gating)
+qg --no-report              # console only, write nothing
+
+# --- what it is ---
+# qg = node E:\MarketInk\Quality_Gate\quality-gate\scan.js
+# Report → ./quality-reports/latest.md (in the folder you ran it from)
+# READ-ONLY: never edits code, never touches git, never installs anything.
+
+# --- install tools (only what a project uses) ---
+pip install ruff mypy bandit pip-audit          # Python (on PATH)
+npm install -D eslint prettier typescript       # JS/TS/React/Next (in project)
+winget install gitleaks.gitleaks                # secrets (on PATH)
+# + Claude Code on PATH for AI review
+
+# --- statuses ---
+PASS = clean   FINDINGS = fix these   SKIP = tool missing / nothing in scope
+ERROR = tool crashed/timed out   OFF = disabled in config
+
+# --- automate ---
+# Level 1: pre-commit  → advisory (QG_BLOCK=1 to block)
+# Level 2: pre-push    → fuller scan (QG_BLOCK=1 to block push on findings)
+# Level 3: .github/workflows/quality-scan.yml → runs on every PR + PR comment
+```
+
+---
+
+## 12. Notes: migration & roadmap
+
+### Migration `scan.py` → `scan.js` (done)
+
+The scanner was migrated from a Python file (`scan.py`) to a single Node file
+(`scan.js`) with **zero npm dependencies** — because Node is already on every
+machine and CI runner in an all-JS/TS org, while Python was the odd one out. It's a
+**wrapper-language swap, not a redesign**: same two layers, same read-only
+guarantee, same report format, and **all check specs kept** (including the Python
+ones — the tool still scans Python projects by shelling out to `ruff`/`mypy`/
+`bandit`/`pip-audit`). `scan.py` is kept one release as a fallback, then removed.
+
+> Windows note: npm-installed bins are `.cmd` shims (`eslint.cmd`, `tsc.cmd`,
+> `npm.cmd`); the scanner resolves the absolute path via its `which`/`localBin`
+> helpers and runs it without a shell. Node's `spawnSync` timeout is in **ms** (the
+> `--timeout` seconds are converted).
+
+### Built today
+
+- ✅ `scan.js` — read-only scanner (Node, zero deps): 11 deterministic checks +
+  Claude AI review, with 6 specialized AI reviewers under `--ai-full`.
+- ✅ Built-in Supabase check + dedicated Supabase AI reviewer (§8).
+- ✅ Wrappers (`quality.ps1`, `quality`), optional config, `CLAUDE.template.md`.
+- ✅ One-time hook installer (`hooks/install-hooks.*`) + `pre-commit`/`pre-push`.
+- ✅ GitHub Actions CI workflow — non-blocking, uploads artifact, **posts the report
+  as a PR comment** and updates it on re-runs.
+- ✅ Markdown + JSON + timestamped reports.
+
+### Roadmap
+
+- ⏳ A `quality init` command that bootstraps a project automatically.
+- ⏳ A three-level `quality quick / review / release` CLI wrapper.
+- ⏳ `.claude/commands/` slash-command reviewers and a pre-commit-framework config.
+- ⏳ AI-in-CI (Claude review on every PR) and a team metrics dashboard.
+
+---
+
+*Read-only by design. It tells you what's wrong; it never touches your code, your
+git history, or your dependencies. The worst it can do is write a report.*
