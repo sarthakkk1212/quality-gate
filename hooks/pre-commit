@@ -1,0 +1,50 @@
+#!/bin/sh
+# MarketInk Quality Gate — pre-commit hook (fast, read-only).
+#
+# Runs automatically on `git commit`. Scans only the STAGED changes with the
+# deterministic checks (secrets, Supabase, linters) — the AI review is skipped
+# here to keep commits fast. Prints any findings so you are NOTIFIED.
+#
+# Behaviour:
+#   * Default          -> notify only, NEVER blocks the commit (exit 0).
+#   * QG_BLOCK=1        -> abort the commit if there are findings (--strict).
+#   * git commit --no-verify  -> skips this hook entirely (git built-in).
+#
+# It NEVER edits code and NEVER changes git state. See scan.js.
+
+# --- locate the scanner: env override first, then the vendored copy ---------
+SCAN=""
+if [ -n "$QUALITY_GATE_HOME" ] && [ -f "$QUALITY_GATE_HOME/scan.js" ]; then
+  SCAN="$QUALITY_GATE_HOME/scan.js"
+else
+  ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+  if [ -f "$ROOT/.quality-gate/scan.js" ]; then
+    SCAN="$ROOT/.quality-gate/scan.js"
+  fi
+fi
+
+if [ -z "$SCAN" ]; then
+  echo "quality-gate: scanner not found — set QUALITY_GATE_HOME or vendor .quality-gate/scan.js. Skipping." >&2
+  exit 0
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "quality-gate: Node.js not found on PATH — skipping (install Node 18+)." >&2
+  exit 0
+fi
+
+echo "quality-gate: scanning staged changes (pre-commit)…"
+
+if [ "${QG_BLOCK:-0}" = "1" ]; then
+  # Blocking mode: non-zero exit aborts the commit.
+  node "$SCAN" --path . --staged --no-ai --no-report --strict
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    echo "quality-gate: findings above — commit blocked (QG_BLOCK=1). Fix them, or commit with --no-verify to bypass." >&2
+  fi
+  exit "$status"
+else
+  # Notify-only mode (default): show findings but never block.
+  node "$SCAN" --path . --staged --no-ai --no-report
+  exit 0
+fi

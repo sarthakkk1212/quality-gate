@@ -1,0 +1,61 @@
+#!/bin/sh
+# MarketInk Quality Gate — pre-push hook (fuller review, read-only).
+#
+# Runs automatically on `git push`. Reviews the changes on the branch being
+# pushed (changed files vs the base branch, auto-detected). Prints findings so
+# you are NOTIFIED before the code leaves your machine.
+#
+# Behaviour:
+#   * Default        -> deterministic checks only, notify only, never blocks.
+#   * QG_AI=1         -> also run the Claude AI review (slower; needs `claude`).
+#   * QG_BLOCK=1      -> abort the push if there are findings (--strict).
+#   * git push --no-verify  -> skips this hook entirely (git built-in).
+#
+# It NEVER edits code and NEVER changes git state. See scan.js.
+
+# git feeds the pushed refs on stdin; we don't need them, but drain it so the
+# pipe never blocks.
+cat >/dev/null 2>&1 || true
+
+# --- locate the scanner: env override first, then the vendored copy ---------
+SCAN=""
+if [ -n "$QUALITY_GATE_HOME" ] && [ -f "$QUALITY_GATE_HOME/scan.js" ]; then
+  SCAN="$QUALITY_GATE_HOME/scan.js"
+else
+  ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+  if [ -f "$ROOT/.quality-gate/scan.js" ]; then
+    SCAN="$ROOT/.quality-gate/scan.js"
+  fi
+fi
+
+if [ -z "$SCAN" ]; then
+  echo "quality-gate: scanner not found — set QUALITY_GATE_HOME or vendor .quality-gate/scan.js. Skipping." >&2
+  exit 0
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "quality-gate: Node.js not found on PATH — skipping (install Node 18+)." >&2
+  exit 0
+fi
+
+echo "quality-gate: reviewing changes before push…"
+
+# Build the argument list.
+set -- --path . --no-report
+if [ "${QG_AI:-0}" != "1" ]; then
+  set -- "$@" --no-ai
+fi
+if [ "${QG_BLOCK:-0}" = "1" ]; then
+  set -- "$@" --strict
+fi
+
+node "$SCAN" "$@"
+status=$?
+
+if [ "${QG_BLOCK:-0}" = "1" ] && [ "$status" -ne 0 ]; then
+  echo "quality-gate: findings above — push blocked (QG_BLOCK=1). Fix them, or push with --no-verify to bypass." >&2
+  exit "$status"
+fi
+
+# Notify-only default: never block the push.
+exit 0

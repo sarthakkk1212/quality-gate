@@ -22,15 +22,25 @@ jobs:
         with:
           fetch-depth: 0            # needed so the scanner can diff against the base
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
-          python-version: "3.12"
+          node-version: "20"
 
-      # Optional: install the deterministic tools you want CI to run. The scanner
-      # skips any tool that isn't present, so install only what this repo uses.
-      - name: Install scanners
-        run: pip install ruff mypy bandit pip-audit
+      # Install the deterministic tools you want CI to run. The scanner skips any
+      # tool that isn't present, so WITHOUT this step every check SKIPs and the
+      # gate becomes a no-op — install what this repo actually uses.
+
+      # JS/TS: install the repo's own dev deps so eslint/prettier/tsc are found in
+      # node_modules/.bin. Runs only when a lockfile exists; a no-op otherwise.
+      - name: Install project dev dependencies (JS/TS)
+        if: hashFiles('package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock') != ''
+        continue-on-error: true   # never fail the build; a failed install just means those checks SKIP
+        run: npm ci
+
+      # Python: uncomment for repos that use Python tooling.
+      # - name: Install Python scanners
+      #   run: pip install ruff mypy bandit pip-audit
 
       - name: Fetch Quality Gate scanner
         run: git clone --depth 1 https://github.com/sarthakkk1212/quality-gate.git .quality-gate-tool
@@ -38,7 +48,7 @@ jobs:
       - name: Run Quality Gate (read-only, non-blocking)
         continue-on-error: true
         run: >
-          python .quality-gate-tool/scan.py
+          node .quality-gate-tool/scan.js
           --path .
           --base "origin/${{ github.base_ref }}"
           --no-ai
