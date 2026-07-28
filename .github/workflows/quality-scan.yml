@@ -61,7 +61,9 @@ jobs:
           name: quality-report
           path: quality-reports/
 
-      # Post the report straight onto the PR so nobody has to download the
+      # Post a COMPACT verdict onto the PR so the thread stays readable. Only
+      # checks that found something are listed here; the full report (every
+      # check + full tool output) lives in the uploaded "quality-report"
       # artifact. Updates the same comment on re-runs instead of adding new ones.
       - name: Comment report on PR
         if: always() && github.event_name == 'pull_request'
@@ -69,24 +71,76 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const path = 'quality-reports/latest.md';
             const marker = '<!-- marketink-quality-gate -->';
+            const artifactHint =
+              '_Full report (every check + tool output) is in the **quality-report** ' +
+              'artifact on the [workflow run](' +
+              `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}` +
+              `/actions/runs/${context.runId})._`;
 
-            let report;
+            // Read the structured report; fall back gracefully if the scan
+            // step never produced one.
+            let data = null;
             try {
-              report = fs.readFileSync(path, 'utf8');
+              data = JSON.parse(fs.readFileSync('quality-reports/latest.json', 'utf8'));
             } catch {
-              report = '_Quality Gate produced no report (the scan step may have failed to run)._';
+              data = null;
             }
 
-            // GitHub caps a comment at 65536 chars; leave room for the wrapper.
-            const MAX = 60000;
-            if (report.length > MAX) {
-              report = report.slice(0, MAX) +
-                '\n\n_…report truncated. Download the full **quality-report** artifact from the Checks tab._';
-            }
+            let body;
+            if (!data) {
+              body = `${marker}\n## 🔍 MarketInk Quality Gate\n\n` +
+                `❓ **No report produced** — the scan step may have failed to run.\n\n${artifactHint}`;
+            } else {
+              const checks = Array.isArray(data.checks) ? data.checks : [];
+              const reviews = Array.isArray(data.reviews) ? data.reviews : [];
 
-            const body = `${marker}\n## 🔍 MarketInk Quality Gate\n\n${report}`;
+              // Anything the reviewer/tools flagged that a human should look at.
+              const problems = checks.filter(c => c.status === 'FINDINGS' || c.status === 'ERROR');
+              const aiProblems = reviews.filter(r => r.status === 'ERROR');
+
+              const passed  = checks.filter(c => c.status === 'PASS').length;
+              const skipped = checks.filter(c => c.status === 'SKIP' || c.status === 'OFF').length;
+              const findings = checks.filter(c => c.status === 'FINDINGS').length;
+              const errors   = checks.filter(c => c.status === 'ERROR').length;
+
+              const clean = problems.length === 0 && aiProblems.length === 0;
+              const verdict = clean
+                ? '✅ **Passed** — no issues found'
+                : findings
+                  ? `⚠️ **Issues found** — ${findings} check(s) with findings`
+                  : '❌ **Errors** — one or more checks failed to run';
+
+              const counts =
+                `\`${passed} passed\` · \`${findings} findings\` · ` +
+                `\`${errors} errors\` · \`${skipped} skipped\``;
+
+              const lines = [
+                marker,
+                '## 🔍 MarketInk Quality Gate',
+                '',
+                verdict,
+                '',
+                counts,
+                '',
+              ];
+
+              if (!clean) {
+                lines.push('| Check | Status | Note |', '|---|---|---|');
+                const icon = { FINDINGS: '⚠️', ERROR: '❌' };
+                for (const c of problems) {
+                  const note = (c.note || '').replace(/\|/g, '\\|').split(/\r?\n/)[0].slice(0, 120);
+                  lines.push(`| ${c.title} | ${icon[c.status] || c.status} ${c.status} | ${note} |`);
+                }
+                for (const r of aiProblems) {
+                  lines.push(`| AI review (${r.prompt}) | ❌ ERROR | see artifact |`);
+                }
+                lines.push('');
+              }
+
+              lines.push(artifactHint);
+              body = lines.join('\n');
+            }
 
             const { owner, repo } = context.repo;
             const issue_number = context.issue.number;
